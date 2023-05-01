@@ -13,12 +13,30 @@ use serde_json::json;
 use serde_json::Value::Null;
 
 
+
+
 #[tokio::main]
-async fn main() -> Result<(), reqwest::Error> {
+async fn main(){
+    let mut restart = true;
+    while restart{
+        println!("Starting/restarting");
+        match discord_lastfm().await {
+//            Err => restart = false,
+            7 => println!("Opcode 7 received, restarting"),
+            _ => {
+                restart = false;
+                println!("discord_lastfm returned with opcode other than 7, exiting")
+            }
+        }
+    }
+
+}
+
+
+async fn discord_lastfm() -> i32 {
     #![allow(unused_mut)]
     dotenv().ok(); 
     // Read environment variables
-    // 
 
     let (heartbeat_tx, mut rx) = mpsc::channel::<String>(3); 
     // Create a multi-producer, single consumer channel. The producers are the heartbeat and last.fm data, and the reciever is our output loop
@@ -51,14 +69,14 @@ async fn main() -> Result<(), reqwest::Error> {
                 .json()
                 .await
                 .expect("Could not parse json");
-                    println!("{:#?}", lfm_response);
+//                println!("{:#?}", lfm_response);
 
 
                 if lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string() == song[0] 
                 && lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string() == song[1]
                 && lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string() == song[2]
                 {
-                    println!("Song info hasn't changed, not updating")
+//                    println!("Song info hasn't changed, not updating")
                 }
 
                 
@@ -68,16 +86,14 @@ async fn main() -> Result<(), reqwest::Error> {
                     lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string(),
                     lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string(),
                     lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string(),
-                    lfm_response.pointer("/recenttracks/track/0/image/0/#text").unwrap().to_string()
                     ];
-                    println!("{} \n {} \n {} \n", song[0], song[1], song[2]);
-                    println!("{}", song[3]);
+//                    println!("{} \n {} \n {} \n", song[0], song[1], song[2]);
                     status_update = r#"{"op": 3, "d": {"since": 0,"activities": [{"name": "NAME","type": 2,"id": "custom", "details":"DETAILS"}],"status": "STATUS","afk": false}}"#
                         .replace("STATUS", status)
                         .replace("NAME", format!("{} - {}", &song[1], &song[0]).replace(r#"""#, "").as_str())
                         .replace("DETAILS", &song[2].replace(r#"""#, "").as_str());
-                    // "assets": [{"large_image":"mp:IMAGE","large_text":"TEXT"}]
-                    // soonTm
+//                    println!("{:#?}", status_update);
+
                 
                     lastfm_tx.send(status_update.to_string()).await.expect("couldnt send status update");    //FIX THIS WHEN LEARN DISCORD API
                 }
@@ -96,7 +112,8 @@ async fn main() -> Result<(), reqwest::Error> {
         .get("https://discordapp.com/api/v9/users/@me")
         .header("Authorization", &token)
         .send()
-        .await?;
+        .await
+        .expect("Could not connect to discord!");
 
     if res.status().to_string() == "200 OK" {
         println!("Token Valid");
@@ -163,15 +180,18 @@ async fn main() -> Result<(), reqwest::Error> {
                 let msg_str = ws_in.unwrap().unwrap().to_string();
                 let msg_json: Value = serde_json::from_str(&msg_str).unwrap_or(json!(Null));
                 // Turn discord reponse to json. If fail, return Null
-                println!("RECIEVED => {:#?}", msg_json);
+//                println!("RECIEVED => {:#?}", msg_json);
                 let opcode = &msg_json["op"].to_string().parse::<i32>().unwrap_or(99);
                 // Extract the opcode from the json response. If there isn't a opcode, set opcode to 99
                 match opcode{
                     11 => { //11 is discord's heartbeat ack
-                    heartbeat_ack_tx.send(true).await.expect("Could not send message through heartbeat_ack");
-                    println!("Recieved heartbeat ack, sent mpsc message")
+                        heartbeat_ack_tx.send(true).await.expect("Could not send message through heartbeat_ack");
+//                        println!("Recieved heartbeat ack, sent mpsc message")
+                    }, 
+                    0 => { // 0 is discord receiving whatever you sent
+//                        println!("discord received")
                     },
-                    _ => println!("Not heartbeat"),
+                    _ => () //println!("Not heartbeat"),
 
 
                 }
@@ -182,7 +202,7 @@ async fn main() -> Result<(), reqwest::Error> {
             ws_out = rx.recv() => {
                 match ws_out{
                     Some(ws_out) => {
-                        println!("sending: \n {:#?}", ws_out);
+                    //    println!("sending: \n {:#?}", ws_out);
                         let _ = ws_stream.send(Message::Text(ws_out)).await;
                     },
 
@@ -194,5 +214,5 @@ async fn main() -> Result<(), reqwest::Error> {
 
         }
     } 
-    Ok(())
+    return 99
 }
