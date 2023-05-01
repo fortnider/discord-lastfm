@@ -141,7 +141,7 @@ async fn discord_lastfm() -> i32 {
         .replace("TOKEN", &token)
         .replace("STATUS", &status);
 
-    println!("{:#?}", identity);
+//    println!("{:#?}", identity);
 
     ws_stream.send(Message::Text(identity.to_string())).await.expect("couldn't send identity... le sigh");
     // Send identity to discord
@@ -157,11 +157,11 @@ async fn discord_lastfm() -> i32 {
             sleep(Duration::from_millis(heartbeat)).await;
             loop{
                 heartbeat_tx.send(r#"{"op": 1, "d": "None"}"#.to_string()).await.expect("Failed to send heartbeat to mspc channel");
-                println!("heartbeat send... waiting");
+//                println!("heartbeat send... waiting");
                 sleep(Duration::from_millis(heartbeat)).await;
                 if heartbeat_ack_rx.try_recv().unwrap_or(false) == false {
                     println!("No heartbeat detected! Returning");
-                    break
+                    return 99
                 };
             }
     
