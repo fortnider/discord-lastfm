@@ -58,7 +58,8 @@ async fn discord_lastfm() -> i32 {
 
             let mut status_update:String;
 
-            
+            let mut play_length = 0;
+            let mut status_cleared = false;
 
             loop{
                 sleep(Duration::from_secs(poll_time)).await;
@@ -75,8 +76,27 @@ async fn discord_lastfm() -> i32 {
                 if lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string() == song[0] 
                 && lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string() == song[1]
                 && lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string() == song[2]
+                // If the song info is the same as last poll
                 {
+                    play_length += poll_time;
 //                    println!("Song info hasn't changed, not updating")
+
+                    if lfm_response.pointer("/recenttracks/track/0/@attr/nowplaying").unwrap().to_string().replace(r#"""#,"").replace("/","") != "true".to_string()
+                    && play_length > 300
+                    && status_cleared == false
+                    {
+                        // If the song is not "Now Playing" on last.fm and has been playing for over 500 seconds
+                        lastfm_tx.send(r#"{"op": 3, "d": {"since": 0,"activities": null,"status": "STATUS","afk": false}}"#.to_string()).await.expect("couldnt send status update"); 
+                        // Clear discord status
+                        println!("SONG NOW PLAYING");
+                        status_cleared = true;
+
+                    }
+
+                    println!("{}", lfm_response.pointer("/recenttracks/track/0/@attr/nowplaying").unwrap().to_string());
+                    assert_eq!(lfm_response.pointer("/recenttracks/track/0/@attr/nowplaying").unwrap().to_string().replace(r#"""#,"").replace("/",""), "true");
+                    println!("{}", play_length.to_string());
+
                 }
 
                 
@@ -89,13 +109,15 @@ async fn discord_lastfm() -> i32 {
                     ];
 //                    println!("{} \n {} \n {} \n", song[0], song[1], song[2]);
                     status_update = r#"{"op": 3, "d": {"since": 0,"activities": [{"name": "NAME","type": 2,"id": "custom", "details":"DETAILS"}],"status": "STATUS","afk": false}}"#
+                    // ,"status": "STATUS","afk": false
                         .replace("STATUS", status)
                         .replace("NAME", format!("{} - {}", &song[1], &song[0]).replace(r#"""#, "").as_str())
                         .replace("DETAILS", &song[2].replace(r#"""#, "").as_str());
 //                    println!("{:#?}", status_update);
 
-                
-                    lastfm_tx.send(status_update.to_string()).await.expect("couldnt send status update");    //FIX THIS WHEN LEARN DISCORD API
+                    lastfm_tx.send(status_update.to_string()).await.expect("couldnt send status update"); 
+                    status_cleared = false;
+                    play_length = 0;
                 }
             }
         }
