@@ -15,3 +15,8 @@ LAST_FM_USER= your last fm user name
 
 todo:
 gui and album art somehow
+album art is probably far fetched. if anyone knows how to add an attachment to the activity without using rpc hit me up on discord
+func#8900
+
+plainly obvious to see, but this code is held together with only dreams and duct tape. 
+

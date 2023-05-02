@@ -81,22 +81,16 @@ async fn discord_lastfm() -> i32 {
                     play_length += poll_time;
 //                    println!("Song info hasn't changed, not updating")
 
-                    if lfm_response.pointer("/recenttracks/track/0/@attr/nowplaying").unwrap().to_string().replace(r#"""#,"").replace("/","") != "true".to_string()
+                    if &lfm_response["recenttracks"]["track"]["0"]["@attr"]["nowplaying"].to_string().replace(r#"""#,"").replace("/","") != &"true".to_string()
                     && play_length > 300
                     && status_cleared == false
                     {
                         // If the song is not "Now Playing" on last.fm and has been playing for over 500 seconds
                         lastfm_tx.send(r#"{"op": 3, "d": {"since": 0,"activities": null,"status": "STATUS","afk": false}}"#.to_string()).await.expect("couldnt send status update"); 
                         // Clear discord status
-                        println!("SONG NOW PLAYING");
                         status_cleared = true;
 
                     }
-
-                    println!("{}", lfm_response.pointer("/recenttracks/track/0/@attr/nowplaying").unwrap().to_string());
-                    assert_eq!(lfm_response.pointer("/recenttracks/track/0/@attr/nowplaying").unwrap().to_string().replace(r#"""#,"").replace("/",""), "true");
-                    println!("{}", play_length.to_string());
-
                 }
 
                 
@@ -151,7 +145,7 @@ async fn discord_lastfm() -> i32 {
 
 
     let hello: Value = serde_json::from_str(&ws_stream.next().await.unwrap().unwrap().to_string()).unwrap();
-    println!("poop {:#?}", hello);
+//    println!("{:#?}", hello);
     // Wait until hello from discord is recieved, then turn into json. 
 
 
