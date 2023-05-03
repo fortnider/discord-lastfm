@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio::time::sleep;
 use serde_json::json;
 use serde_json::Value::Null;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 
 
@@ -57,9 +58,10 @@ async fn discord_lastfm() -> i32 {
             let mut song: Vec<String> = vec!["".to_string(),"".to_string(),"".to_string()];
 
             let mut status_update:String;
-
-            let mut play_length = 0;
             let mut status_cleared = false;
+            let mut now: u64; //current time
+            let mut song_date;
+
 
             loop{
                 sleep(Duration::from_secs(poll_time)).await;
@@ -72,46 +74,61 @@ async fn discord_lastfm() -> i32 {
                 .expect("Could not parse json");
 //                println!("{:#?}", lfm_response);
 
-
+                now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().try_into().unwrap();
+                song_date = lfm_response.pointer("/recenttracks/track/0/date/uts").unwrap_or(&json!(69)).as_str().unwrap_or("18446744073709551614").parse::<u64>().unwrap(); // Grabs song date, or if now playing, returns the max u64 value
                 if lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string() == song[0] 
                 && lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string() == song[1]
                 && lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string() == song[2]
                 // If the song info is the same as last poll
                 {
-                    play_length += poll_time;
 //                    println!("Song info hasn't changed, not updating")
+/* 
+                    if &lfm_response["recenttracks"]["track"]["0"]["@attr"]["nowplaying"].to_string() != &"null".to_string(){
+                        if &lfm_response["recenttracks"]["track"]["0"]["date"]["uts"].to_string().replace(r#"""#,"").parse::<u64>().unwrap() + 15 < now
+                        && status_cleared == false {
 
-                    if &lfm_response["recenttracks"]["track"]["0"]["@attr"]["nowplaying"].to_string().replace(r#"""#,"").replace("/","") != &"true".to_string()
-                    && play_length > 300
-                    && status_cleared == false
-                    {
                         // If the song is not "Now Playing" on last.fm and has been playing for over 500 seconds
                         lastfm_tx.send(r#"{"op": 3, "d": {"since": 0,"activities": null,"status": "STATUS","afk": false}}"#.to_string()).await.expect("couldnt send status update"); 
                         // Clear discord status
                         status_cleared = true;
+                        }
 
-                    }
+
+
+                    }    */
                 }
 
                 
 
                 else {
+                    // If song info is not the same,
+                    // Update songs
                     song= vec![
                     lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string(),
                     lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string(),
                     lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string(),
                     ];
-//                    println!("{} \n {} \n {} \n", song[0], song[1], song[2]);
-                    status_update = r#"{"op": 3, "d": {"since": 0,"activities": [{"name": "NAME","type": 2,"id": "custom", "details":"DETAILS"}],"status": "STATUS","afk": false}}"#
-                    // ,"status": "STATUS","afk": false
-                        .replace("STATUS", status)
-                        .replace("NAME", format!("{} - {}", &song[1], &song[0]).replace(r#"""#, "").as_str())
-                        .replace("DETAILS", &song[2].replace(r#"""#, "").as_str());
-//                    println!("{:#?}", status_update);
 
-                    lastfm_tx.send(status_update.to_string()).await.expect("couldnt send status update"); 
-                    status_cleared = false;
-                    play_length = 0;
+                    if song_date < now - 500 
+                    && status_cleared == false{
+                    // If the last played song date (Does not show if song is now playing) was over 500 seconds ago, and status is not already cleared.
+                        lastfm_tx.send(r#"{"op": 3, "d": {"since": 0,"activities": null,"status": "STATUS","afk": false}}"#.to_string()).await.expect("couldnt send status update"); 
+                        status_cleared = true;
+                        println!("Status cleared");
+                        // Clear status and set status_cleared to true
+                    }
+
+                    else{
+                        status_update = r#"{"op": 3, "d": {"since": 0,"activities": [{"name": "NAME","type": 2,"id": "custom", "details":"DETAILS"}],"status": "STATUS","afk": false}}"#
+                        // ,"status": "STATUS","afk": false
+                            .replace("STATUS", status)
+                            .replace("NAME", format!("{} - {}", &song[1], &song[0]).replace(r#"""#, "").as_str())
+                            .replace("DETAILS", &song[2].replace(r#"""#, "").as_str());
+    //                    println!("{:#?}", status_update);
+                        lastfm_tx.send(status_update.to_string()).await.expect("couldnt send status update"); 
+                        status_cleared = false;
+                        // Send status message to discord
+                    }
                 }
             }
         }
@@ -184,16 +201,10 @@ async fn discord_lastfm() -> i32 {
         } 
     );
 
-
-
-
-
-
-
     loop{ // Main websocket send/receive loop
         tokio::select!{
             ws_in = ws_stream.next() => {
-                let msg_str = ws_in.unwrap().unwrap().to_string();
+                let msg_str = ws_in.unwrap().unwrap_or("fds".into()).to_string();
                 let msg_json: Value = serde_json::from_str(&msg_str).unwrap_or(json!(Null));
                 // Turn discord reponse to json. If fail, return Null
 //                println!("RECIEVED => {:#?}", msg_json);
