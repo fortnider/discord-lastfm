@@ -16,7 +16,10 @@ use serde_json::json;
 use serde_json::Value::Null;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::Receiver;
-
+use log::LevelFilter;
+use log::debug;
+use log::warn;
+use log::error;
 
 
 #[allow(unused_mut)]
@@ -43,14 +46,14 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
 
     loop{
         sleep(Duration::from_secs(poll_time)).await;
-        println!("Polling last.fm");
+        debug!("Polling Last FM");
         lfm_response = reqwest::get(&last_fm_url)
         .await
         .expect("Could not get response from last fm")
         .json()
         .await
         .expect("Could not parse json");
-//                println!("{:#?}", lfm_response);
+        debug!("LastFM Returned {:#?}", lfm_response);
         if lfm_response["recenttracks"]["track"][0]["@attr"]["nowplaying"].to_string() == r#""true""#
         // If the song is now playing
         {
@@ -60,8 +63,7 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
             || lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string() != song[2]{
                 // If song is different than previous song
 
-                println!("Song is currently playing and different. Updating status. ");
-                println!("{}", lfm_response["recenttracks"]["track"][0]["@attr"]["nowplaying"].to_string());
+                debug!("Song is currently playing and different. Updating status.");
                 song= vec![
                 lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string(),
                 lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string(),
@@ -86,14 +88,14 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
         else if status_cleared == false
         // If song is not now playing
             {
-                println!("Song is not currently playing and status has not been cleared. Clearing status now. ");
+                debug!("Song is not currently playing and status has not been cleared. Clearing status now. ");
                 status_update = r#"{"op": 3, "d": {"since": 0,"activities": null,"status": "STATUS","afk": false}}"#.to_string();
                 lastfm_tx.send(status_update.to_string()).await.expect("couldnt send status update"); 
                 status_cleared = true;
 
             }
         else {
-            println!("Song is not currently playing.");
+            //debug!("Song is not currently playing.");
         }
     }
 }
@@ -107,9 +109,9 @@ async fn discord_io(heartbeat_ack_tx: Sender<bool>, mut rx: Receiver<String>, mu
             ws_in = ws_stream.next() => {
                 match ws_in{
                     Some(_) => {
+                        debug!("Received: {:#?}", ws_in);
                         let msg_str = ws_in.unwrap().unwrap_or("fds".into()).to_string();
                         let msg_json: Value = serde_json::from_str(&msg_str).unwrap_or(json!(Null));
-
                         // Turn discord reponse to json. If fail, return Null
 
                         let opcode = &msg_json["op"].to_string().parse::<i32>().unwrap_or(99);
@@ -117,7 +119,7 @@ async fn discord_io(heartbeat_ack_tx: Sender<bool>, mut rx: Receiver<String>, mu
                         match opcode{
                             11 => { //11 is discord's heartbeat ack
                                 heartbeat_ack_tx.send(true).await.expect("Could not send message through heartbeat_ack");
-                              println!("Recieved heartbeat ack, sent mpsc message")
+                                debug!("Recieved heartbeat ack, sent mpsc message")
                             }, 
 
                             0 => { // 0 is discord receiving whatever you sent
@@ -137,7 +139,7 @@ async fn discord_io(heartbeat_ack_tx: Sender<bool>, mut rx: Receiver<String>, mu
             ws_out = rx.recv() => {
                 match ws_out{
                     Some(ws_out) => {
-                        println!("Sending: \n {:#?}", ws_out);
+                        debug!("Sent: {:#?}", ws_out);
                         let _ = ws_stream.send(Message::Text(ws_out)).await;
                     },
 
@@ -155,10 +157,12 @@ async fn heartbeat(heartbeat_tx: Sender<String>, heartbeat_interval: u64, mut he
     sleep(Duration::from_millis(heartbeat_interval)).await;
     loop{
         heartbeat_tx.send(r#"{"op": 1, "d": "None"}"#.to_string()).await.expect("Failed to send heartbeat to mspc channel");
-        println!("Heartbeat Sent");
+        debug!("Heartbeat Sent");
         sleep(Duration::from_millis(heartbeat_interval)).await;
         if heartbeat_ack_rx.try_recv().unwrap_or(false) == false {
-            println!("No heartbeat detected! Returning");
+            warn!("No heartbeat detected! Returning");
+            return
+
         };
     }
 }
@@ -167,6 +171,7 @@ async fn heartbeat(heartbeat_tx: Sender<String>, heartbeat_interval: u64, mut he
 #[tokio::main]
 async fn main(){
     dotenv().ok(); 
+    simple_logging::log_to_file("log.log", LevelFilter::Debug).expect("Couldn't log");
 
     let client = reqwest::Client::new();
     let mut token:String = env::var("DISCORD_TOKEN").unwrap();
@@ -182,35 +187,29 @@ async fn main(){
         .expect("Could not connect to discord!");
 
     if res.status().to_string() == "200 OK" {
-        println!("Token Valid");
+        debug!("Token Valid");
     } else {
-        println!("Token Invalid!! \n{}", res.status())
+        warn!("Token Invalid!! \n{}", res.status())
     };
-
     //Connect to discord using token. If it fails, print error. Otherwise, token is valid. 
 
-
-//    const DISCORD_URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
     let (mut ws_stream, _) = 
         connect_async("wss://gateway.discord.gg/?v=9&encoding=json").await.expect("Failed ws connect");
 
     let hello: Value = serde_json::from_str(&ws_stream.next().await.unwrap().unwrap().to_string()).unwrap();
-//    println!("{:#?}", hello);
     // Wait until hello from discord is recieved, then turn into json. 
-
+    debug!("Received hello: {:#?}", hello );
 
     let heartbeat_interval: u64 = hello.pointer("/d/heartbeat_interval").unwrap().to_string().parse::<u64>().unwrap();
-    println!("heartbeat {:?}", heartbeat_interval);
+    debug!("Heartbeat: {:?}", heartbeat_interval);
     // Retrieve heartbeat from json. 
 
     let identity = r#"{"op": 2, "d": {"token": "TOKEN", "properties": {"$os": "Windows 10", "$browser": "Google Chrome", "$device": "Windows"}, "presence": {"status": "STATUS", "afk": false}}, "s": null, "t": null}"#
         .replace("TOKEN", &token)
         .replace("STATUS", &status);
 
-//    println!("{:#?}", identity);
-
     ws_stream.send(Message::Text(identity.to_string())).await.expect("couldn't send identity... le sigh");
-
+    debug!("Sent Identity: {:#?}", identity);
 
 
     let (heartbeat_tx, mut rx) = mpsc::channel::<String>(3); 
@@ -222,6 +221,6 @@ async fn main(){
         _ = heartbeat(heartbeat_tx, heartbeat_interval, heartbeat_ack_rx) => (),
         // These three functions should never finish before the cancellation mpsc. When cancellation mpsc receives message, everything is dropped and theoretically should restart. 
     }
-    println!("end");
+    error!("Something happened, Program terminating");
 
 }
