@@ -2,6 +2,8 @@ use std::time::Duration;
 use std::env;
 use log::info;
 use reqwest;
+use reqwest::Error;
+use reqwest::Response;
 use dotenv::dotenv;
 use tokio::net::TcpStream;
 use tokio_tungstenite::MaybeTlsStream;
@@ -31,7 +33,6 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
     // Read environment variables
 
     // Create a multi-producer, single consumer channel. The producers are the heartbeat and last.fm data, and the reciever is our output loop
-
     let mut last_fm_api_key: String = env::var("LAST_FM_API_KEY").unwrap();
     let mut last_fm_user:String = env::var("LAST_FM_USER").unwrap();
     let mut last_fm_url: String = format!("https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user={}&api_key={}&limit=1&format=json", last_fm_user, last_fm_api_key);
@@ -43,18 +44,29 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
     let mut song: Vec<String> = vec!["".to_string(),"".to_string(),"".to_string()];
     let mut status_update:String;
     let mut status_cleared = true;
+    let mut lfm_query:Result<reqwest::Response, reqwest::Error>;
     // Variables for later
 
+    let backoff_timer = vec![10, 20, 30, 60, 120, 300, 600];
+    let mut backoff_count: usize = 0;
 
     loop{
-        sleep(Duration::from_secs(poll_time)).await;
-        debug!("Polling Last FM");
-        lfm_response = reqwest::get(&last_fm_url)
-        .await
-        .expect("Could not get response from last fm")
-        .json()
-        .await
-        .expect("Could not parse json");
+        loop{
+            lfm_query = reqwest::get(&last_fm_url).await;
+            match lfm_query{
+                Ok(response) => {
+                    lfm_response = response.json().await.expect("Could not parse json");
+                    break
+                },
+                Err(_) => ()
+    
+            };
+
+            sleep(Duration::from_secs(*backoff_timer.get(backoff_count).unwrap_or(&600))).await;
+            error!("Could not connect to last.fm! Waiting {} seconds before retrying.",*backoff_timer.get(backoff_count).unwrap_or(&600));
+            backoff_count += 1;
+        }
+
         //debug!("LastFM Returned {:#?}", lfm_response);
         if lfm_response["recenttracks"]["track"][0]["@attr"]["nowplaying"].to_string() == r#""true""#
         // If the song is now playing
@@ -98,6 +110,9 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
         else {
             //debug!("Song is not currently playing.");
         }
+    
+    sleep(Duration::from_secs(poll_time)).await;
+
     }
 }
 
@@ -111,7 +126,15 @@ async fn discord_io(heartbeat_ack_tx: Sender<bool>, mut rx: Receiver<String>, mu
                 match ws_in{
                     Some(_) => {
                         //let msg_str = ws_in.unwrap().unwrap_or("fds".into()).to_string();
-                        let msg_json: Value = serde_json::from_str(ws_in.unwrap().unwrap().to_text().unwrap()).unwrap_or(json!(Null));
+                        let msg_json: Value = 
+                            match ws_in.unwrap(){
+                                Ok(msg) => serde_json::from_str(msg.to_text().unwrap()).unwrap(),
+                                Err(_) => json!(Null),
+
+                            };
+                        //serde_json::from_str(ws_in.unwrap().unwrap().to_text().unwrap()).unwrap_or(json!(Null));
+
+                        // Can try to unwrap: thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Protocol(ResetWithoutClosingHandshake)', src/main.rs:114:83 FIX LATER!!!
                         // Turn discord reponse to json. If fail, return Null
 
                         let opcode = &msg_json["op"].to_string().parse::<i32>().unwrap_or(99);
@@ -177,6 +200,7 @@ async fn heartbeat(heartbeat_tx: Sender<String>, heartbeat_interval: u64, mut he
         sleep(Duration::from_millis(heartbeat_interval)).await;
         if heartbeat_ack_rx.try_recv().unwrap_or(false) == false {
             warn!("No heartbeat detected! Returning");
+            // NEED TO FIX!! WHEN THIS RETURNS THE PROGRAM TERMINATES
             return
 
         };
@@ -188,25 +212,49 @@ async fn heartbeat(heartbeat_tx: Sender<String>, heartbeat_interval: u64, mut he
 async fn main(){
     dotenv().ok(); 
     simple_logging::log_to_file("log.log", LevelFilter::Info).expect("Couldn't log");
+    let backoff_timer = vec![10, 20, 30, 60, 120, 300, 600];
+    let mut backoff_count: usize = 0;
+    let client = reqwest::Client::new();
+    let token:String = env::var("DISCORD_TOKEN").unwrap();
+
+    let status = "online"; // "online", "dnd", "idle"
+
+    
+    let mut res:Result<Response, Error>;
+
     loop {
-        let client = reqwest::Client::new();
-        let mut token:String = env::var("DISCORD_TOKEN").unwrap();
-
-        let mut status = "online"; // "online", "dnd", "idle"
-
-
-        let res = client
+        loop{
+            res = client
             .get("https://discordapp.com/api/v9/users/@me")
             .header("Authorization", &token)
             .send()
-            .await
-            .expect("Could not connect to discord!");
+            .await;
 
-        if res.status().to_string() == "200 OK" {
-            info!("Token Valid");
-        } else {
-            warn!("Token Invalid!! \n{}", res.status())
-        };
+            match &res {
+                Ok(resp) => {
+                    if resp.status().to_string() == "200 OK"{
+                        info!("Token Valid");
+                        break
+                    }
+                    else {
+                        warn!("Token Invalid or other error! \n{}", resp.status());
+                        
+                    };
+                    
+                },
+
+                Err(_) => {
+                    error!("Could not connect to last.fm! Waiting {} seconds before retrying.",*backoff_timer.get(backoff_count).unwrap_or(&600));
+                }
+            };
+
+            sleep(Duration::from_secs(*backoff_timer.get(backoff_count).unwrap_or(&600))).await;
+            backoff_count += 1;
+        }
+        backoff_count = 0;
+        // Tries to connect to discord. If an error is encountered, wait before retrying. After, reset the waiting timer. 
+
+
         //Connect to discord using token. If it fails, print error. Otherwise, token is valid. 
 
         let (mut ws_stream, _) = 
@@ -230,28 +278,41 @@ async fn main(){
 
         let (heartbeat_tx, mut rx) = mpsc::channel::<String>(3); 
         let lastfm_tx = heartbeat_tx.clone();
-        let (heartbeat_ack_tx, mut heartbeat_ack_rx) = mpsc::channel::<bool>(1);
-            
+        let (heartbeat_ack_tx, mut heartbeat_ack_rx) = mpsc::channel::<bool>(1); 
         tokio::select!{
             _ = last_fm_poll(lastfm_tx) => (),
             failcode = discord_io(heartbeat_ack_tx, rx, ws_stream) => {
                 match failcode{
                     9 => {
-                        ()
+                        () //Continue
                     },
                     7 => {
-                        ()
+                        () //Continue
                     },
                     _ => {
-                        error!("Program returned failcode {}", failcode);
+                        error!("Program returned unexpected failcode {}", failcode);
                         break
                     },
                 }
+/* 
+                sleep(Duration::from_secs(10)).await;
+
+            res = client
+                .get("https://discordapp.com/api/v9/users/@me")
+                .header("Authorization", &token)
+                .send()
+                .await;
+
+            match res {
+                Ok(response) => (),
+                Err()
+            }*/
+
             }, 
             _ = heartbeat(heartbeat_tx, heartbeat_interval, heartbeat_ack_rx) => (),
-            // These three functions should never finish before the cancellation mpsc. When cancellation mpsc receives message, everything is dropped and theoretically should restart. 
         }
 
-        error!("Something happened, Program terminating");
     }
+    error!("Something happened, Program terminating");
+
 }
