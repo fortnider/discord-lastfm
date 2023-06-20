@@ -1,5 +1,6 @@
 use std::time::Duration;
 use std::env;
+use std::vec;
 use log::info;
 use reqwest;
 use reqwest::Error;
@@ -23,30 +24,26 @@ use log::LevelFilter;
 use log::debug;
 use log::warn;
 use log::error;
+use std::fs;
 
 
 
 #[allow(unused_mut)]
-async fn last_fm_poll(lastfm_tx: Sender<String>){
+async fn last_fm_poll(lastfm_tx: Sender<String>, backoff_timer: &Vec<u64>){
 
     dotenv().ok(); 
     // Read environment variables
-
-    // Create a multi-producer, single consumer channel. The producers are the heartbeat and last.fm data, and the reciever is our output loop
     let mut last_fm_api_key: String = env::var("LAST_FM_API_KEY").unwrap();
     let mut last_fm_user:String = env::var("LAST_FM_USER").unwrap();
     let mut last_fm_url: String = format!("https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user={}&api_key={}&limit=1&format=json", last_fm_user, last_fm_api_key);
     let mut poll_time: u64 = 10;
     let status = "online"; // "online", "dnd", "idle"
-    // In the future will be editable using GUI, so keeping it mut. 
 
     let mut lfm_response:Value;
     let mut song: Vec<String> = vec!["".to_string(),"".to_string(),"".to_string()];
     let mut status_update:String;
     let mut status_cleared = true;
-    // Variables for later
 
-    let backoff_timer = vec![10, 20, 30, 60, 120, 300, 600];
     let mut lfm_backoff_count: usize = 0;
     info!("fdsjklsdfjlj");
     loop{
@@ -72,10 +69,8 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
         let song_album = lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string();
 
         if now_playing == "true"
-        // If the song is now playing
         {
             if song_name != song[0] || song_artist != song[1] || song_album != song[2]{
-                // If song is different than previous song
                 info!("Song is currently playing and different. Updating status.");
                 song= vec![song_name, song_artist, song_album];
     
@@ -91,7 +86,6 @@ async fn last_fm_poll(lastfm_tx: Sender<String>){
             
         }
         else if status_cleared == false
-        // If song is not now playing and status has not been cleared
             {
                 info!("Song is not currently playing and status has not been cleared. Clearing status now. ");
                 status_update = r#"{"op": 3, "d": {"since": 0,"activities": null,"status": "STATUS","afk": false}}"#.to_string();
@@ -194,86 +188,86 @@ async fn heartbeat(heartbeat_tx: Sender<String>, heartbeat_interval: u64, mut he
     }
 }
 
+async fn discord_connection(backoff_timer: &Vec<u64>) -> (WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, u64){
+    let status = "online"; // "online", "dnd", "idle"
+    let token:String = env::var("DISCORD_TOKEN").unwrap();
+    let mut backoff_count: usize = 0;
+
+    loop{
+        info!("Attempting to connect to Discord");
+        let res = reqwest::Client::new()
+        .get("https://discordapp.com/api/v9/users/@me")
+        .header("Authorization", &token)
+        .send()
+        .await;
+        
+        match &res {
+            Ok(resp) => {
+                if resp.status().to_string() == "200 OK"{
+                    info!("Token Valid");
+                    let (mut ws_stream, _) = connect_async("wss://gateway.discord.gg/?v=9&encoding=json").await.expect("Failed ws connect");
+        
+                    let heartbeat_interval = serde_json::from_str::<Value>(&ws_stream.next().await.unwrap().unwrap().to_string()).unwrap().pointer("/d/heartbeat_interval").unwrap().to_string().parse::<u64>().unwrap();
+                    info!("Heartbeat: {:?}", heartbeat_interval);
+                    // Retrieve heartbeat from json. 
+            
+                    let identity = r#"{"op": 2, "d": {"token": "TOKEN", "properties": {"$os": "Windows 10", "$browser": "Google Chrome", "$device": "Windows"}, "presence": {"status": "STATUS", "afk": false}}, "s": null, "t": null}"#
+                        .replace("TOKEN", &token)
+                        .replace("STATUS", &status);
+            
+                    ws_stream.send(Message::Text(identity.to_string())).await.expect("couldn't send identity... le sigh");
+                    info!("Successfully connected to Discord");
+
+
+                    return (ws_stream, heartbeat_interval)
+                    }
+                    else {
+                        error!("Token Invalid or other error! \n{}", resp.status());
+                    
+                };
+                
+            },
+
+            Err(_) => {
+                error!("Could not connect to Discord! Waiting {} seconds before retrying.",*backoff_timer.get(backoff_count).unwrap_or(&600));
+            }
+        };
+
+        sleep(Duration::from_secs(*backoff_timer.get(backoff_count).unwrap_or(&600))).await;
+        backoff_count += 1;
+    }
+}
+
+
+
+
 #[allow(unused_mut)]
 #[tokio::main]
 async fn main(){
     dotenv().ok(); 
     simple_logging::log_to_file("log.log", LevelFilter::Info).expect("Couldn't log");
     let backoff_timer = vec![10, 20, 30, 60, 120, 300, 600];
-    let mut backoff_count: usize = 0;
-    let client = reqwest::Client::new();
-    let token:String = env::var("DISCORD_TOKEN").unwrap();
-
-    let status = "online"; // "online", "dnd", "idle"
     let mut res:Result<Response, Error>;
 
-    let mut heartbeat_interval: u64; 
 
-    let mut ws_stream;
+
+
+
+
+
+
 
     loop {
-        loop{
-            info!("Attempting to connect to Discord");
 
-            res = client
-            .get("https://discordapp.com/api/v9/users/@me")
-            .header("Authorization", &token)
-            .send()
-            .await;
-            
-            match &res {
-                Ok(resp) => {
-                    if resp.status().to_string() == "200 OK"{
-                        info!("Token Valid");
-                        (ws_stream, _) = connect_async("wss://gateway.discord.gg/?v=9&encoding=json").await.expect("Failed ws connect");
-            
-                        let hello: Value = serde_json::from_str(&ws_stream.next().await.unwrap().unwrap().to_string()).unwrap();
-                        // Wait until hello from discord is recieved, then turn into json. 
-                        info!("Received hello: {:#?}", hello );
-                
-                        heartbeat_interval = hello.pointer("/d/heartbeat_interval").unwrap().to_string().parse::<u64>().unwrap();
-                        info!("Heartbeat: {:?}", heartbeat_interval);
-                        // Retrieve heartbeat from json. 
-                
-                        let identity = r#"{"op": 2, "d": {"token": "TOKEN", "properties": {"$os": "Windows 10", "$browser": "Google Chrome", "$device": "Windows"}, "presence": {"status": "STATUS", "afk": false}}, "s": null, "t": null}"#
-                            .replace("TOKEN", &token)
-                            .replace("STATUS", &status);
-                
-                        ws_stream.send(Message::Text(identity.to_string())).await.expect("couldn't send identity... le sigh");
-                        info!("Successfully connected to Discord");
-
-
-                        break
-                        }
-                        else {
-                            error!("Token Invalid or other error! \n{}", resp.status());
-                        
-                    };
-                    
-                },
-
-                Err(_) => {
-                    error!("Could not connect to Discord! Waiting {} seconds before retrying.",*backoff_timer.get(backoff_count).unwrap_or(&600));
-                }
-            };
-
-            sleep(Duration::from_secs(*backoff_timer.get(backoff_count).unwrap_or(&600))).await;
-            backoff_count += 1;
-        }
-        backoff_count = 0;
-        // Tries to connect to discord. If an error is encountered, wait before retrying. After, reset the waiting timer. 
-
-
+        
         //Connect to discord using token. If it fails, print error. Otherwise, token is valid. 
-
-
 
 
         let (heartbeat_tx, mut rx) = mpsc::channel::<String>(3); 
         let lastfm_tx = heartbeat_tx.clone();
         let (heartbeat_ack_tx, mut heartbeat_ack_rx) = mpsc::channel::<bool>(1); 
         tokio::select!{
-            _ = last_fm_poll(lastfm_tx) => (),
+            _ = last_fm_poll(lastfm_tx, &backoff_timer) => (),
             failcode = discord_io(heartbeat_ack_tx, rx, ws_stream) => {
                 match failcode{
                     9 => {
