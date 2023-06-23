@@ -3,8 +3,6 @@ use std::env;
 use std::vec;
 use log::info;
 use reqwest;
-use reqwest::Error;
-use reqwest::Response;
 use dotenv::dotenv;
 use tokio::net::TcpStream;
 use tokio_tungstenite::MaybeTlsStream;
@@ -16,15 +14,13 @@ use tokio::sync::{mpsc};
 use futures::{SinkExt,StreamExt};
 use serde_json::Value;
 use tokio::time::sleep;
-use serde_json::json;
-use serde_json::Value::Null;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::Receiver;
 use log::LevelFilter;
 use log::debug;
 use log::warn;
 use log::error;
-use std::fs;
+
 
 
 
@@ -101,19 +97,16 @@ async fn last_fm_poll(lastfm_tx: Sender<String>, backoff_timer: &Vec<u64>){
 
 async fn discord_io(heartbeat_ack_tx: Sender<bool>, mut rx: Receiver<String>, mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) -> u64{
 
-
     loop{ // Main websocket send/receive loop
         tokio::select!{
             ws_in = ws_stream.next() => {
                 match ws_in{
                     Some(_) => {
-                        //let msg_str = ws_in.unwrap().unwrap_or("fds".into()).to_string();
-                        let msg_json: Value = 
-                            match ws_in.unwrap(){
-                                Ok(msg) => serde_json::from_str(msg.to_text().unwrap()).unwrap(),
-                                Err(_) => json!(Null),
-
-                            };
+                        let msg_json: Value;
+                        match ws_in.unwrap(){
+                            Ok(msg) => {msg_json = serde_json::from_str(msg.to_text().unwrap()).unwrap();},
+                            Err(_) => return 69,
+                        };
                         //serde_json::from_str(ws_in.unwrap().unwrap().to_text().unwrap()).unwrap_or(json!(Null));
 
                         // Can try to unwrap: thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Protocol(ResetWithoutClosingHandshake)', src/main.rs:114:83 FIX LATER!!!
@@ -204,12 +197,12 @@ async fn discord_connection(backoff_timer: &Vec<u64>) -> (WebSocketStream<tokio_
         match &res {
             Ok(resp) => {
                 if resp.status().to_string() == "200 OK"{
-                    info!("Token Valid");
+                    info!("Token Valid, attempting websocket connection");
+
                     let (mut ws_stream, _) = connect_async("wss://gateway.discord.gg/?v=9&encoding=json").await.expect("Failed ws connect");
-        
-                    let heartbeat_interval = serde_json::from_str::<Value>(&ws_stream.next().await.unwrap().unwrap().to_string()).unwrap().pointer("/d/heartbeat_interval").unwrap().to_string().parse::<u64>().unwrap();
-                    info!("Heartbeat: {:?}", heartbeat_interval);
-                    // Retrieve heartbeat from json. 
+                    let hello = &ws_stream.next().await.unwrap().unwrap().to_string();
+
+                    let heartbeat_interval = serde_json::from_str::<Value>(hello).unwrap().pointer("/d/heartbeat_interval").unwrap().to_string().parse::<u64>().unwrap();
             
                     let identity = r#"{"op": 2, "d": {"token": "TOKEN", "properties": {"$os": "Windows 10", "$browser": "Google Chrome", "$device": "Windows"}, "presence": {"status": "STATUS", "afk": false}}, "s": null, "t": null}"#
                         .replace("TOKEN", &token)
@@ -247,27 +240,16 @@ async fn main(){
     dotenv().ok(); 
     simple_logging::log_to_file("log.log", LevelFilter::Info).expect("Couldn't log");
     let backoff_timer = vec![10, 20, 30, 60, 120, 300, 600];
-    let mut res:Result<Response, Error>;
-
-
-
-
-
-
-
-
 
     loop {
-
-        
-        //Connect to discord using token. If it fails, print error. Otherwise, token is valid. 
-
-
+        let (mut ws_stream, heartbeat_interval) = discord_connection(&backoff_timer).await;
         let (heartbeat_tx, mut rx) = mpsc::channel::<String>(3); 
         let lastfm_tx = heartbeat_tx.clone();
         let (heartbeat_ack_tx, mut heartbeat_ack_rx) = mpsc::channel::<bool>(1); 
         tokio::select!{
             _ = last_fm_poll(lastfm_tx, &backoff_timer) => (),
+
+
             failcode = discord_io(heartbeat_ack_tx, rx, ws_stream) => {
                 match failcode{
                     9 => {
@@ -276,29 +258,17 @@ async fn main(){
                     7 => {
                         () //Continue
                     },
+                    69 => {
+                        () //Continue
+                    }
                     _ => {
                         error!("Program returned unexpected failcode {}", failcode);
                         break
                     },
                 }
-/* 
-                sleep(Duration::from_secs(10)).await;
-
-            res = client
-                .get("https://discordapp.com/api/v9/users/@me")
-                .header("Authorization", &token)
-                .send()
-                .await;
-
-            match res {
-                Ok(response) => (),
-                Err()
-            }*/
-
             }, 
             _ = heartbeat(heartbeat_tx, heartbeat_interval, heartbeat_ack_rx) => (),
         }
-
     }
     error!("Something happened, Program terminating");
 
