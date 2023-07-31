@@ -10,7 +10,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::connect_async;
 use tungstenite::protocol::Message;
 use tungstenite;
-use tokio::sync::{mpsc};
+use tokio::sync::mpsc;
 use futures::{SinkExt,StreamExt};
 use serde_json::Value;
 use tokio::time::sleep;
@@ -49,7 +49,29 @@ async fn last_fm_poll(lastfm_tx: Sender<String>, backoff_timer: &Vec<u64>){
                 Ok(response) => {
                     info!("last.fm Response Received");
                     lfm_response = response.json().await.expect("Could not parse json");
-                    break 'lfm_query;
+
+                    match lfm_response.pointer("/error"){
+                        Some(error) => {
+                            let error_num = error.as_u64().unwrap();
+                            match error_num {
+                                8 => { //"Operation failed - Most likely the backend service failed. Please try again."
+                                    sleep(Duration::from_secs(*backoff_timer.get(lfm_backoff_count).unwrap_or(&600))).await;
+                                    error!("Could not connect to last.fm! Waiting {} seconds before retrying.",*backoff_timer.get(lfm_backoff_count).unwrap_or(&600));
+                                    lfm_backoff_count += 1;
+                                },
+                                _ => { // Some other last.fm error message. Unsure of them, will add as I find them.
+                                    println!("{}", lfm_response.to_string());
+                                    panic!("FUCK");
+                                }
+                            }
+                        },
+                        None => {
+                            break 'lfm_query;
+                        }
+                        
+                    }
+
+
                 },
                 Err(_) => {
                     sleep(Duration::from_secs(*backoff_timer.get(lfm_backoff_count).unwrap_or(&600))).await;
@@ -61,8 +83,19 @@ async fn last_fm_poll(lastfm_tx: Sender<String>, backoff_timer: &Vec<u64>){
         lfm_backoff_count = 0;
 
         let now_playing = lfm_response["recenttracks"]["track"][0]["@attr"]["nowplaying"].as_str().unwrap_or_default();
-        let song_name = lfm_response.pointer("/recenttracks/track/0/name").unwrap().to_string();
-        // song name unwrap none value????
+        let song_name: String;
+        match lfm_response.pointer("/recenttracks/track/0/name"){
+            Some(song) => {
+                song_name = song.to_string();
+            }
+            None => { 
+
+                println!("{}", lfm_response.to_string());
+                panic!("fuck")
+            }
+        }
+
+
         let song_artist = lfm_response.pointer("/recenttracks/track/0/artist/#text").unwrap().to_string();
         let song_album = lfm_response.pointer("/recenttracks/track/0/album/#text").unwrap().to_string();
 
@@ -70,7 +103,7 @@ async fn last_fm_poll(lastfm_tx: Sender<String>, backoff_timer: &Vec<u64>){
         {
             if song_name != song[0] || song_artist != song[1] || song_album != song[2]{
                 info!("Song is currently playing and different. Updating status.");
-                song= vec![song_name, song_artist, song_album];
+                song = vec![song_name, song_artist, song_album];
     
 
                 status_update = r#"{"op": 3, "d": {"since": 0,"activities": [{"name": "NAME","type": 2,"id": "custom", "details":"DETAILS"}],"status": "STATUS","afk": false}}"#
@@ -112,8 +145,18 @@ async fn discord_io(heartbeat_ack_tx: Sender<bool>, mut rx: Receiver<String>, mu
                                     msg_json = serde_json::from_str(r#"{"op": 20 }"#).unwrap();
                                 }
                                 else {
-                                    msg_json = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+                                    match serde_json::from_str(msg.to_text().unwrap()) {
+                                        Ok(msg) => {
+                                            msg_json = msg;
+                                        },
+                                        Err(err_msg) => {
+                                            println!("Failed to parse discord's json! Error message: {}", err_msg);
+                                            println!("Discord's message: {}", msg.to_text().unwrap());
+                                            panic!()
+                                        }
+                                    }
                                 }
+                                // thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Error("expected value", line: 1, column: 1)', src/main.rs:128:93
 //                                match msg_json = serde_json::from_str(msg.to_text().unwrap()).unwrap();
                             },
                             Err(_) => return 69,
