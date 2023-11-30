@@ -280,7 +280,6 @@ async fn discord_connection(
     let status = "online"; // "online", "dnd", "idle"
                            // let token: String = env::var("DISCORD_TOKEN").unwrap();
     let mut backoff_count: usize = 0;
-    let token = "MjExMTQ4NDE1MDg0NjU4Njg4.GGseP7.0KrG5BvELBNXXOe_64fdnlaVEp6N_5oFSXhNl4";
     loop {
         info!("Attempting to connect to Discord");
         let res = reqwest::Client::new()
